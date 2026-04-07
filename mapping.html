@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>转码解码映射表管理系统</title>
+    <title>数据脱敏处理器</title>
     <style>
         * {
             margin: 0;
@@ -430,7 +430,7 @@
 <body>
     <div class="container">
         <div class="header">
-            <h1>🔐 转码解码映射表管理系统</h1>
+            <h1>🔐 数据脱敏处理器</h1>
             <p>安全的字段编码/解码解决方案 | 本地处理,数据不离开电脑</p>
         </div>
 
@@ -671,6 +671,7 @@
 
                 <div class="buttons-row" style="margin-bottom: 20px;">
                     <button class="btn btn-primary" id="refreshMappingBtn">🔄 刷新数据</button>
+                    <button class="btn btn-secondary" id="undoBtn" disabled>↩️ 撤回 (<span id="undoCount">0</span>)</button>
                     <button class="btn btn-danger" id="clearAllBtn">🗑️ 清空所有</button>
                 </div>
 
@@ -801,6 +802,8 @@
         let mappingData = [];
         let aliasData = [];
         let currentTab = 'encode';
+        let undoHistory = []; // 撤回历史记录
+        const MAX_UNDO_HISTORY = 50; // 最大撤回记录数
 
         // DOM 元素
         const tabs = document.querySelectorAll('.tab');
@@ -822,6 +825,7 @@
         const searchResultBody = document.getElementById('searchResultBody');
         const mappingTableBody = document.getElementById('mappingTableBody');
         const refreshMappingBtn = document.getElementById('refreshMappingBtn');
+        const undoBtn = document.getElementById('undoBtn');
         const clearAllBtn = document.getElementById('clearAllBtn');
         const exportMappingBtn = document.getElementById('exportMappingBtn');
         const importFile = document.getElementById('importFile');
@@ -871,9 +875,11 @@
         function init() {
             loadMappingData();
             loadAliasData();
+            loadUndoHistory();
             setupEventListeners();
             updateStats();
             updateAliasStats();
+            updateUndoButton();
             renderMappingTable();
             renderAliasTable();
         }
@@ -900,6 +906,8 @@
                 renderMappingTable();
                 updateStats();
             });
+
+            undoBtn.addEventListener('click', undoLastOperation);
 
             clearAllBtn.addEventListener('click', clearAllMappings);
             exportMappingBtn.addEventListener('click', exportMappingTable);
@@ -962,23 +970,41 @@
                 return;
             }
 
-            const encodedValues = values.map(value => {
+            // 保存当前状态用于撤回
+            saveToUndoHistory('编码操作');
+
+            // 用于跟踪批量编码中的索引（只对顺序编码和前缀编码有效）
+            let batchIndex = 0;
+
+            const encodedValues = values.map((value, index) => {
                 let encodedValue;
                 let timestamp = new Date().toLocaleString('zh-CN');
 
-                switch (rule) {
-                    case 'sequential':
-                        encodedValue = generateSequentialCode(fieldTypeValue, value);
-                        break;
-                    case 'random':
-                        encodedValue = generateRandomCode();
-                        break;
-                    case 'hash':
-                        encodedValue = generateHashCode(value);
-                        break;
-                    case 'prefix':
-                        encodedValue = generatePrefixCode(fieldTypeValue, value);
-                        break;
+                // 检查是否已存在相同原始值的映射
+                const existingMapping = mappingData.find(
+                    m => m.originalValue === value && m.fieldType === fieldTypeValue
+                );
+                
+                // 如果已存在，使用现有编码；否则生成新编码
+                if (existingMapping) {
+                    encodedValue = existingMapping.encodedValue;
+                } else {
+                    switch (rule) {
+                        case 'sequential':
+                            encodedValue = generateSequentialCode(fieldTypeValue, value, batchIndex);
+                            batchIndex++;
+                            break;
+                        case 'random':
+                            encodedValue = generateRandomCode();
+                            break;
+                        case 'hash':
+                            encodedValue = generateHashCode(value);
+                            break;
+                        case 'prefix':
+                            encodedValue = generatePrefixCode(fieldTypeValue, value, batchIndex);
+                            batchIndex++;
+                            break;
+                    }
                 }
 
                 return {
@@ -986,30 +1012,35 @@
                     originalValue: value,
                     encodedValue: encodedValue,
                     encodeRule: rule,
-                    createdAt: timestamp
+                    createdAt: timestamp,
+                    isExisting: !!existingMapping
                 };
             });
 
             encodedValues.forEach(item => {
-                const existingIndex = mappingData.findIndex(
-                    m => m.originalValue === item.originalValue && m.fieldType === item.fieldType
-                );
-                if (existingIndex >= 0) {
-                    mappingData[existingIndex] = item;
-                } else {
-                    mappingData.push(item);
+                if (!item.isExisting) {
+                    mappingData.push({
+                        fieldType: item.fieldType,
+                        originalValue: item.originalValue,
+                        encodedValue: item.encodedValue,
+                        encodeRule: item.encodeRule,
+                        createdAt: item.createdAt
+                    });
                 }
             });
 
             saveMappingData();
             renderEncodeResult(encodedValues);
             updateStats();
+            updateUndoButton();
             originalData.value = '';
         }
 
-        function generateSequentialCode(fieldType, value) {
-            const existingCount = mappingData.filter(m => m.fieldType === fieldType).length + 1;
-            return `${fieldType.toUpperCase()}${String(existingCount).padStart(4, '0')}`;
+        function generateSequentialCode(fieldType, value, batchIndex = 0) {
+            // 计算基准编号：现有相同类型的数量 + 1 + 批量处理中的索引
+            const existingCount = mappingData.filter(m => m.fieldType === fieldType).length;
+            const newNumber = existingCount + 1 + batchIndex;
+            return `${fieldType.toUpperCase()}${String(newNumber).padStart(4, '0')}`;
         }
 
         function generateRandomCode() {
@@ -1052,10 +1083,11 @@
             return finalCode;
         }
 
-        function generatePrefixCode(fieldType, value) {
+        function generatePrefixCode(fieldType, value, batchIndex = 0) {
             const prefix = customPrefix.value || fieldType.toUpperCase();
-            const existingCount = mappingData.filter(m => m.fieldType === fieldType).length + 1;
-            return `${prefix}${String(existingCount).padStart(4, '0')}`;
+            const existingCount = mappingData.filter(m => m.fieldType === fieldType).length;
+            const newNumber = existingCount + 1 + batchIndex;
+            return `${prefix}${String(newNumber).padStart(4, '0')}`;
         }
 
         function renderEncodeResult(data) {
@@ -1162,20 +1194,24 @@
 
         function deleteMapping(encodedValue) {
             if (confirm('确定要删除这条映射记录吗?')) {
+                saveToUndoHistory('删除映射');
                 mappingData = mappingData.filter(m => m.encodedValue !== encodedValue);
                 saveMappingData();
                 renderMappingTable();
                 updateStats();
+                updateUndoButton();
             }
         }
 
         function clearAllMappings() {
-            if (confirm('确定要清空所有映射数据吗?此操作不可恢复!')) {
+            if (confirm('确定要清空所有映射数据吗?此操作可以通过撤回功能恢复!')) {
+                saveToUndoHistory('清空所有映射');
                 mappingData = [];
                 saveMappingData();
                 renderMappingTable();
                 updateStats();
-                alert('已清空所有映射数据');
+                updateUndoButton();
+                alert('已清空所有映射数据（可通过撤回按钮恢复）');
             }
         }
 
@@ -1199,6 +1235,80 @@
 
         function saveMappingData() {
             localStorage.setItem('mappingData', JSON.stringify(mappingData));
+        }
+
+        // 撤回历史相关函数
+        function saveToUndoHistory(operationName) {
+            const snapshot = {
+                operationName: operationName,
+                timestamp: new Date().toLocaleString('zh-CN'),
+                mappingData: JSON.parse(JSON.stringify(mappingData)),
+                aliasData: JSON.parse(JSON.stringify(aliasData))
+            };
+            
+            undoHistory.push(snapshot);
+            
+            // 限制历史记录数量
+            if (undoHistory.length > MAX_UNDO_HISTORY) {
+                undoHistory.shift();
+            }
+            
+            // 保存到 localStorage
+            localStorage.setItem('undoHistory', JSON.stringify(undoHistory));
+        }
+
+        function loadUndoHistory() {
+            const stored = localStorage.getItem('undoHistory');
+            if (stored) {
+                try {
+                    undoHistory = JSON.parse(stored);
+                } catch (e) {
+                    console.error('Failed to load undo history:', e);
+                    undoHistory = [];
+                }
+            }
+        }
+
+        function updateUndoButton() {
+            const undoCountSpan = document.getElementById('undoCount');
+            if (undoCountSpan) {
+                undoCountSpan.textContent = undoHistory.length;
+            }
+            if (undoBtn) {
+                undoBtn.disabled = undoHistory.length === 0;
+            }
+        }
+
+        function undoLastOperation() {
+            if (undoHistory.length === 0) {
+                alert('没有可撤回的操作!');
+                return;
+            }
+
+            const lastSnapshot = undoHistory.pop();
+            
+            if (confirm(`确定要撤回上一次操作吗?\n\n操作: ${lastSnapshot.operationName}\n时间: ${lastSnapshot.timestamp}`)) {
+                // 恢复数据
+                mappingData = lastSnapshot.mappingData;
+                aliasData = lastSnapshot.aliasData;
+                
+                // 保存恢复后的数据
+                saveMappingData();
+                saveAliasData();
+                localStorage.setItem('undoHistory', JSON.stringify(undoHistory));
+                
+                // 更新界面
+                renderMappingTable();
+                renderAliasTable();
+                updateStats();
+                updateAliasStats();
+                updateUndoButton();
+                
+                alert('✅ 已撤回到上一个状态');
+            } else {
+                // 如果取消，把快照放回去
+                undoHistory.push(lastSnapshot);
+            }
         }
 
         function loadMappingData() {
@@ -1258,6 +1368,9 @@
                 return;
             }
 
+            // 保存当前状态用于撤回
+            saveToUndoHistory('添加别名规则');
+
             const existingIndex = aliasData.findIndex(a => a.standardValue === standardValue);
             
             if (existingIndex >= 0) {
@@ -1283,6 +1396,7 @@
             updateAliasStats();
             renderAliasTable();
             clearAliasForm();
+            updateUndoButton();
             alert(`别名规则已添加: ${standardValue} ← ${aliases.join(', ')}`);
         }
 
@@ -1321,20 +1435,24 @@
 
         function deleteAlias(id) {
             if (confirm('确定要删除这条别名规则吗?')) {
+                saveToUndoHistory('删除别名规则');
                 aliasData = aliasData.filter(a => a.id !== id);
                 saveAliasData();
                 updateAliasStats();
                 renderAliasTable();
+                updateUndoButton();
             }
         }
 
         function clearAllAliases() {
-            if (confirm('确定要清空所有别名规则吗?此操作不可恢复!')) {
+            if (confirm('确定要清空所有别名规则吗?此操作可以通过撤回功能恢复!')) {
+                saveToUndoHistory('清空所有别名');
                 aliasData = [];
                 saveAliasData();
                 updateAliasStats();
                 renderAliasTable();
-                alert('已清空所有别名规则');
+                updateUndoButton();
+                alert('已清空所有别名规则（可通过"映射表管理"中的撤回按钮恢复）');
             }
         }
 
@@ -1617,6 +1735,9 @@
         }
 
         function importMappingItems(items) {
+            // 保存当前状态用于撤回
+            saveToUndoHistory('导入映射表');
+            
             let addedCount = 0;
             let updatedCount = 0;
 
@@ -1634,7 +1755,8 @@
             saveMappingData();
             renderMappingTable();
             updateStats();
-            alert(`导入完成!\n\n✅ 新增: ${addedCount} 条\n🔄 更新: ${updatedCount} 条\n📊 总计: ${mappingData.length} 条`);
+            updateUndoButton();
+            alert(`导入完成!\n\n✅ 新增: ${addedCount} 条\n🔄 更新: ${updatedCount} 条\n📊 总计: ${mappingData.length} 条\n\n💡 如需撤回，可点击"映射表管理"中的撤回按钮`);
         }
 
         function batchEncodeAndDownload() {
