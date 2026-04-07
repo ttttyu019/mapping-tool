@@ -1,0 +1,11 @@
+# 忽略 WorkBuddy 内部文件
+.workbuddy/
+
+# 忽略系统文件
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 忽略临时文件
+*.tmp
+*.bak
