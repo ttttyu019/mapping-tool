@@ -1989,13 +1989,15 @@
                 } else if (isExcel) {
                     reader.onload = (e) => {
                         try {
-                            const workbook = XLSX.read(e.target.result, { type: 'array' });
+                            // raw: true 保持单元格原始值，避免日期被转换为数字
+                            const workbook = XLSX.read(e.target.result, { type: 'array', raw: true });
                             let mappingData = [];
                             let aliasData = [];
 
                             workbook.SheetNames.forEach(sheetName => {
                                 const sheet = workbook.Sheets[sheetName];
-                                const jsonData = XLSX.utils.sheet_to_json(sheet);
+                                // raw: true 保持日期等字段的原始文本格式
+                                const jsonData = XLSX.utils.sheet_to_json(sheet, { raw: true });
 
                                 if (sheetName.includes('映射') || sheetName.toLowerCase().includes('mapping')) {
                                     mappingData = parseMappingFromRows(jsonData);
@@ -2023,9 +2025,10 @@
                 } else if (isCSV) {
                     reader.onload = (e) => {
                         try {
-                            const workbook = XLSX.read(e.target.result, { type: 'string' });
+                            const workbook = XLSX.read(e.target.result, { type: 'string', raw: true });
                             const sheet = workbook.Sheets[workbook.SheetNames[0]];
-                            const jsonData = XLSX.utils.sheet_to_json(sheet);
+                            // raw: true 保持日期等字段的原始文本格式
+                            const jsonData = XLSX.utils.sheet_to_json(sheet, { raw: true });
 
                             let mappingData = [];
                             let aliasData = [];
