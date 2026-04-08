@@ -512,6 +512,66 @@
             <div class="section" id="sectionDecode">
                 <h2 class="section-title">🔍 解码查询</h2>
 
+                <!-- 报告反编译功能区 -->
+                <div class="export-section" style="background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%); border: 2px solid #4caf50; margin-bottom: 30px;">
+                    <h3 style="color: #2e7d32; margin-bottom: 15px;">📄 报告反编译（批量还原）</h3>
+                    <p style="margin-bottom: 15px; color: #555; line-height: 1.8;">
+                        上传脱敏后的报告文件，自动将编码值还原为原始人员信息。<br>
+                        <strong>支持格式：</strong>Excel (.xlsx/.xls)、CSV (.csv)
+                    </p>
+                    
+                    <div style="display: flex; gap: 15px; flex-wrap: wrap; align-items: center; margin-bottom: 15px;">
+                        <div style="flex: 1; min-width: 250px;">
+                            <input type="file" id="decodeReportFile" accept=".xlsx,.xls,.csv" style="display: none;">
+                            <button class="btn btn-secondary" onclick="document.getElementById('decodeReportFile').click()" style="width: 100%;">
+                                📁 选择脱敏报告文件
+                            </button>
+                            <div id="decodeFileName" style="margin-top: 8px; color: #666; font-size: 13px;"></div>
+                        </div>
+                        <div>
+                            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                                <input type="checkbox" id="decodeAllColumns" checked>
+                                <span>扫描所有列</span>
+                            </label>
+                        </div>
+                    </div>
+                    
+                    <div id="decodeColumnSelector" style="display: none; margin-bottom: 15px; padding: 15px; background: white; border-radius: 8px;">
+                        <label style="font-weight: 600; margin-bottom: 10px; display: block;">选择要反编译的列：</label>
+                        <div id="decodeColumnList" style="display: flex; flex-wrap: wrap; gap: 10px;"></div>
+                    </div>
+                    
+                    <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                        <button class="btn btn-primary" id="startDecodeReport" style="background: linear-gradient(135deg, #4caf50 0%, #45a049 100%);">
+                            🔄 开始反编译
+                        </button>
+                        <button class="btn btn-secondary" id="previewDecodeReport">
+                            👁️ 预览结果
+                        </button>
+                        <button class="btn btn-secondary" id="downloadDecodedReport" style="display: none;">
+                            📥 下载还原后的报告
+                        </button>
+                    </div>
+                    
+                    <div id="decodeReportStats" style="display: none; margin-top: 15px; padding: 15px; background: white; border-radius: 8px;">
+                        <h4 style="margin-bottom: 10px; color: #333;">📊 反编译统计</h4>
+                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px;">
+                            <div style="text-align: center; padding: 10px; background: #e3f2fd; border-radius: 8px;">
+                                <div style="font-size: 24px; font-weight: bold; color: #1976d2;" id="decodeTotalCells">0</div>
+                                <div style="font-size: 12px; color: #666;">扫描单元格</div>
+                            </div>
+                            <div style="text-align: center; padding: 10px; background: #e8f5e9; border-radius: 8px;">
+                                <div style="font-size: 24px; font-weight: bold; color: #388e3c;" id="decodeMatchedCells">0</div>
+                                <div style="font-size: 12px; color: #666;">匹配成功</div>
+                            </div>
+                            <div style="text-align: center; padding: 10px; background: #fff3e0; border-radius: 8px;">
+                                <div style="font-size: 24px; font-weight: bold; color: #f57c00;" id="decodeUnmatchedCells">0</div>
+                                <div style="font-size: 12px; color: #666;">未匹配</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <div class="stats-grid">
                     <div class="stat-card">
                         <div class="stat-value" id="totalMappings">0</div>
@@ -990,6 +1050,13 @@
             importAliasBtn.addEventListener('click', importAliasTable);
             exportAliasBtn.addEventListener('click', exportAliasTable);
             clearAllAliasBtn.addEventListener('click', clearAllAliases);
+
+            // 报告反编译功能事件监听
+            document.getElementById('decodeReportFile').addEventListener('change', handleDecodeFileSelect);
+            document.getElementById('decodeAllColumns').addEventListener('change', updateColumnSelector);
+            document.getElementById('startDecodeReport').addEventListener('click', startDecodeReport);
+            document.getElementById('previewDecodeReport').addEventListener('click', previewDecodeReport);
+            document.getElementById('downloadDecodedReport').addEventListener('click', downloadDecodedReport);
         }
 
         function switchTab(tabName) {
@@ -2658,6 +2725,267 @@
                 </html>
             `);
             logWindow.document.close();
+        }
+
+        // ========== 报告反编译功能 ==========
+        let decodedReportData = null;  // 存储反编译后的数据
+        let originalReportData = null; // 存储原始报告数据
+        let reportSheetNames = [];     // 工作表名称
+        let reportFileName = '';       // 原始文件名
+
+        // 构建编码值到原始值的反向映射表
+        function buildReverseMapping() {
+            const reverseMap = {};
+            mappingData.forEach(item => {
+                reverseMap[item.encodedValue] = {
+                    originalValue: item.originalValue,
+                    fieldType: item.fieldType
+                };
+            });
+            return reverseMap;
+        }
+
+        // 处理文件选择
+        function handleDecodeFileSelect(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            reportFileName = file.name;
+            document.getElementById('decodeFileName').textContent = `已选择: ${file.name}`;
+            document.getElementById('downloadDecodedReport').style.display = 'none';
+            document.getElementById('decodeReportStats').style.display = 'none';
+            decodedReportData = null;
+
+            const fileName = file.name.toLowerCase();
+            const isExcel = fileName.endsWith('.xlsx') || fileName.endsWith('.xls');
+            const isCSV = fileName.endsWith('.csv');
+
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                try {
+                    let workbook;
+                    if (isExcel) {
+                        workbook = XLSX.read(e.target.result, { type: 'array', raw: true });
+                    } else if (isCSV) {
+                        workbook = XLSX.read(e.target.result, { type: 'string', raw: true });
+                    }
+
+                    reportSheetNames = workbook.SheetNames;
+                    originalReportData = {};
+
+                    // 解析每个工作表
+                    workbook.SheetNames.forEach(sheetName => {
+                        const sheet = workbook.Sheets[sheetName];
+                        originalReportData[sheetName] = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: '' });
+                    });
+
+                    // 显示列选择器（如果用户不选择"扫描所有列"）
+                    updateColumnSelector();
+
+                } catch (err) {
+                    console.error(err);
+                    alert('文件解析失败: ' + err.message);
+                }
+            };
+
+            if (isExcel) {
+                reader.readAsArrayBuffer(file);
+            } else {
+                reader.readAsText(file);
+            }
+        }
+
+        // 更新列选择器
+        function updateColumnSelector() {
+            const decodeAllColumns = document.getElementById('decodeAllColumns').checked;
+            const columnSelector = document.getElementById('decodeColumnSelector');
+            const columnList = document.getElementById('decodeColumnList');
+
+            if (decodeAllColumns || !originalReportData) {
+                columnSelector.style.display = 'none';
+                return;
+            }
+
+            columnSelector.style.display = 'block';
+            columnList.innerHTML = '';
+
+            // 获取第一个工作表的表头作为列名
+            const firstSheet = reportSheetNames[0];
+            const headers = originalReportData[firstSheet][0] || [];
+
+            headers.forEach((header, index) => {
+                if (header) {
+                    const label = document.createElement('label');
+                    label.style.cssText = 'display: flex; align-items: center; gap: 5px; padding: 5px 10px; background: #f0f4ff; border-radius: 5px; cursor: pointer;';
+                    label.innerHTML = `
+                        <input type="checkbox" class="decode-column-check" data-index="${index}" checked>
+                        <span>${header}</span>
+                    `;
+                    columnList.appendChild(label);
+                }
+            });
+        }
+
+        // 开始反编译报告
+        function startDecodeReport() {
+            if (!originalReportData || Object.keys(originalReportData).length === 0) {
+                alert('请先选择要反编译的报告文件!');
+                return;
+            }
+
+            if (mappingData.length === 0) {
+                alert('映射表为空，无法进行反编译!\n请先在"字段编码"中创建映射关系。');
+                return;
+            }
+
+            const reverseMap = buildReverseMapping();
+            const decodeAllColumns = document.getElementById('decodeAllColumns').checked;
+
+            // 获取要处理的列索引
+            let selectedColumns = null;
+            if (!decodeAllColumns) {
+                selectedColumns = [];
+                document.querySelectorAll('.decode-column-check:checked').forEach(cb => {
+                    selectedColumns.push(parseInt(cb.dataset.index));
+                });
+            }
+
+            let totalCells = 0;
+            let matchedCells = 0;
+            let unmatchedCells = 0;
+
+            // 深拷贝原始数据
+            decodedReportData = {};
+            reportSheetNames.forEach(sheetName => {
+                decodedReportData[sheetName] = originalReportData[sheetName].map(row => [...row]);
+            });
+
+            // 遍历每个工作表进行反编译
+            reportSheetNames.forEach(sheetName => {
+                const data = decodedReportData[sheetName];
+
+                // 从第二行开始（跳过表头）
+                for (let rowIndex = 1; rowIndex < data.length; rowIndex++) {
+                    const row = data[rowIndex];
+
+                    for (let colIndex = 0; colIndex < row.length; colIndex++) {
+                        // 如果指定了列，则只处理指定的列
+                        if (selectedColumns && !selectedColumns.includes(colIndex)) {
+                            continue;
+                        }
+
+                        const cellValue = String(row[colIndex] || '').trim();
+                        if (!cellValue) continue;
+
+                        totalCells++;
+
+                        // 查找是否匹配编码值
+                        if (reverseMap[cellValue]) {
+                            data[rowIndex][colIndex] = reverseMap[cellValue].originalValue;
+                            matchedCells++;
+                        } else {
+                            unmatchedCells++;
+                        }
+                    }
+                }
+            });
+
+            // 显示统计信息
+            document.getElementById('decodeTotalCells').textContent = totalCells;
+            document.getElementById('decodeMatchedCells').textContent = matchedCells;
+            document.getElementById('decodeUnmatchedCells').textContent = unmatchedCells;
+            document.getElementById('decodeReportStats').style.display = 'block';
+            document.getElementById('downloadDecodedReport').style.display = 'inline-block';
+
+            alert(`✅ 反编译完成!\n\n📊 扫描单元格: ${totalCells}\n✅ 匹配成功: ${matchedCells}\n⚠️ 未匹配: ${unmatchedCells}\n\n点击"下载还原后的报告"获取结果文件`);
+        }
+
+        // 预览反编译结果
+        function previewDecodeReport() {
+            if (!decodedReportData) {
+                alert('请先点击"开始反编译"处理报告!');
+                return;
+            }
+
+            let previewHTML = '<h3>📄 反编译预览</h3>';
+
+            reportSheetNames.forEach(sheetName => {
+                const data = decodedReportData[sheetName];
+                const originalData = originalReportData[sheetName];
+
+                previewHTML += `<h4 style="margin: 20px 0 10px 0; color: #667eea;">📋 工作表: ${sheetName}</h4>`;
+                previewHTML += '<table style="border-collapse: collapse; width: 100%; margin-bottom: 20px; font-size: 13px;">';
+
+                // 最多显示前20行
+                const maxRows = Math.min(data.length, 21);
+                const maxCols = Math.min((data[0] || []).length, 10);
+
+                for (let i = 0; i < maxRows; i++) {
+                    previewHTML += '<tr>';
+                    for (let j = 0; j < maxCols; j++) {
+                        const originalValue = String(originalData[i]?.[j] || '');
+                        const decodedValue = String(data[i]?.[j] || '');
+                        const isChanged = originalValue !== decodedValue;
+                        const style = i === 0
+                            ? 'background: #667eea; color: white; font-weight: bold;'
+                            : (isChanged ? 'background: #e8f5e9; color: #2e7d32; font-weight: bold;' : '');
+
+                        previewHTML += `<td style="border: 1px solid #ddd; padding: 8px; ${style}">${decodedValue}</td>`;
+                    }
+                    if ((data[0] || []).length > 10) {
+                        previewHTML += `<td style="border: 1px solid #ddd; padding: 8px; color: #999;">...</td>`;
+                    }
+                    previewHTML += '</tr>';
+                }
+
+                if (data.length > 21) {
+                    previewHTML += `<tr><td colspan="${maxCols + 1}" style="text-align: center; padding: 10px; color: #666;">... 还有 ${data.length - 21} 行</td></tr>`;
+                }
+
+                previewHTML += '</table>';
+            });
+
+            previewHTML += '<p style="color: #666; font-size: 12px; margin-top: 15px;">💡 绿色高亮显示已还原的单元格</p>';
+
+            const previewWindow = window.open('', '_blank', 'width=1000,height=700');
+            previewWindow.document.write(`
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <meta charset="UTF-8">
+                    <title>反编译预览 - ${reportFileName}</title>
+                    <style>
+                        body { font-family: Arial, sans-serif; padding: 20px; background: #f5f5f5; }
+                        h3 { color: #333; margin-bottom: 20px; }
+                        h4 { color: #667eea; }
+                        table { background: white; }
+                    </style>
+                </head>
+                <body>${previewHTML}</body>
+                </html>
+            `);
+            previewWindow.document.close();
+        }
+
+        // 下载还原后的报告
+        function downloadDecodedReport() {
+            if (!decodedReportData) {
+                alert('请先进行反编译操作!');
+                return;
+            }
+
+            const wb = XLSX.utils.book_new();
+
+            reportSheetNames.forEach(sheetName => {
+                const ws = XLSX.utils.aoa_to_sheet(decodedReportData[sheetName]);
+                XLSX.utils.book_append_sheet(wb, ws, sheetName);
+            });
+
+            // 生成新文件名
+            const baseName = reportFileName.replace(/\.[^/.]+$/, '');
+            const newFileName = `${baseName}_已还原_${new Date().toISOString().split('T')[0]}.xlsx`;
+
+            XLSX.writeFile(wb, newFileName);
         }
 
         document.addEventListener('DOMContentLoaded', init);
